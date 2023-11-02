@@ -1,197 +1,203 @@
 #include <unistd.h>
 #include <iostream>
+#include <stdlib.h>
 #include <string>
 #include <cstring>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <netdb.h> 
-#include <sstream>
-#include <pthread.h>
-#include <unistd.h>
-#include <stdio.h>     
 #include <cmath> 
-#include <iomanip>
-#include <vector>
 #include <map>
-
-#include <fstream>
+#include <vector>
+#include <sys/wait.h>
+#include <sstream>
 using namespace std;
 
-//Prints out everything 
-void print(int x,vector<float> arr,vector<string> set){
-  cout<<"CPU "<<x<<endl;
-  cout<<"Task scheduling information: ";
-
-  //Loop with string set
-  for(int i=0; i<set.size()-2;i=i+2){
-    cout<<set[i]<<"("<<set[i+1]<<"), ";
-  }
-  cout<<set[set.size()-2]<<"("<<set[set.size()-1]<<")"<<endl;
-
-  cout<<"Entropy for CPU "<<x<<endl;
-
-  //Loop with just numbers 
-  for(int i=0; i<arr.size();i++){
-    cout<<fixed<<setprecision(2)<<abs(arr[i])<<" ";
-  }
-  cout<<endl;
-}
-
-//Converts sever output into float for print 
-vector<float> stringToFloat(string x) {
-  vector<float> result;
-  float f;
-  stringstream s;
-  s<<x;
-  while(s>>f){
-    result.push_back(f);
-  }
- return result;
-}
-
-//input struct
+//Input Struct
 struct in{
-  const char* portno;
-  const char* severIP;
-  string currset;
-  //For print 
-  vector<string> currsetarr;
-  //Server
-  vector<float> printH;
+  float currFreq=0;
+  float currh=0;
+  float extrafreq=0;
+  map<string,float> freq;
+
+  string charnow;//The new var
+  vector<string> currset;//Set[i] segemented 
+  vector<float> printH;//set of h for print 
 };
 
-void* fuc(void* arg){
-  string buffer;
-  struct sockaddr_in serv_addr;
-  struct hostent *server;
-  in* arg_ptr= (in*)arg;
-  
-  int portno = atoi(arg_ptr->portno);
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-  buffer = arg_ptr->currset;
-  
-  //Creating socket
-  if (sockfd < 0) {
-      std::cerr << "ERROR opening socket" << std::endl;
-      exit(0);
-  }
-  server = gethostbyname(arg_ptr->severIP);
+//Output Struct
+struct out{
+  float h=0;
+  float Nfreq=0;
+};
 
-  if (server == NULL) {
-      std::cerr << "ERROR, no such host" << std::endl;
-      exit(0);
-  }
-  bzero((char *) &serv_addr, sizeof(serv_addr));
-  serv_addr.sin_family = AF_INET;
-  bcopy((char *)server->h_addr, 
-       (char *)&serv_addr.sin_addr.s_addr,
-       server->h_length);
-  serv_addr.sin_port = htons(portno);
-  
-  // Connect to the server
-  if (connect(sockfd,(struct sockaddr *)&serv_addr,sizeof(serv_addr)) < 0) {
-      std::cerr << "ERROR connecting" << std::endl;
-      exit(0);
-  }
+//Caluclates h
+out entropy(in input, string i){
+  out output;
+  float newTerm=0,currTerm=0;
 
-  //Writing to sever
-  int msgSize = buffer.size() * sizeof(std::string);
- 
-  if (write(sockfd,&msgSize,sizeof(int)) < 0) {
-      std::cerr << "ERROR writing to socket" << std::endl;
-      exit(0);
-  }
+  output.Nfreq=input.currFreq +input.extrafreq;
 
-  if (write(sockfd,buffer.c_str(),msgSize) < 0){
-      std::cerr << "ERROR writing to socket" << std::endl;
-      exit(0);
-  }
+  if(output.Nfreq==input.extrafreq){output.h=0;} 
+  else{
+    if(input.freq[i]==0){currTerm=0;}
+    else{currTerm = input.freq[i] * log2(input.freq[i]);}
 
+  //NewTerm  
+  newTerm =(input.freq[i] +input.extrafreq ) * log2(input.freq[i]+input.extrafreq);
 
- //reading sever 
-  if (read(sockfd,&msgSize,sizeof(int)) < 0) {
-      std::cerr << "ERROR reading from socket" << std::endl;
-      exit(0);
+  //H 
+  output.h=log2(output.Nfreq) - ((log2 (input.currFreq)-input.currh)*(input.currFreq)-currTerm+newTerm)/output.Nfreq;
   }
-  
-  char *tempBuffer = new char[msgSize+1];
-  bzero(tempBuffer,msgSize+1);
+  return output;
+}
 
-  if (read(sockfd,tempBuffer,msgSize) < 0) {
-      std::cerr << "ERROR reading from socket" << std::endl;
-      exit(0);
-  }
-  //getting sever output
-  buffer=tempBuffer;
-  
-  //converting output to float
-  arg_ptr->printH = stringToFloat(buffer);
-  
-  delete [] tempBuffer;
-  
-  close(sockfd);
+//Iterating the currset 
+void* work(void* arg){
+  in* input = static_cast<in*>(arg);
+  out out;
+
+  for(int i=0;i<input->currset.size();i=i+2){
+      input->extrafreq=stoi(input->currset[i+1]);
+      input->currh=out.h;
+      input->currFreq =out.Nfreq;
+
+      out=entropy(*input,input->currset[i]);
+      input->printH.push_back(out.h);
+      input->freq[input->currset[i]]+=input->extrafreq;
+    }
+
   return nullptr;
 }
 
+//Deals with while(true)
+void fireman(int){
+   while (waitpid(-1, NULL, WNOHANG) > 0)
+    ;
+}
 
-int main(int argc, char *argv[]){
-  vector<string> set;//whole input
-
-  //stuff for input
-  stringstream s;
-  string line;
-  string letter;
-  string num;
-  
-  
-  //Getting input 
-  while(getline(cin,line)){
-    set.push_back(line);
-  }
-  
-  //setting up threads
-  int nthreads;
-  nthreads=set.size();
-
-  pthread_t tid[nthreads];
-  in input[nthreads];
-  
-  
-  //create 
-  for(int i=0; i<nthreads;i++){
-    s.clear();
-    s<<set[i];
-    input[i].severIP=argv[1];
-    input[i].portno=argv[2];
-    input[i].currset=set[i];
-    
-    vector<string> currset;//Get all of the lines from input
-
-    //Segements set per char
-    while(s>>letter>>num){
-     //segmented set for print 
-     currset.push_back(letter);
-     currset.push_back(num);
+//changes the h vector back into string for client 
+std::string vectostring(const std::vector<float>& floatVector) {
+    std::stringstream ss;
+    // Iterate through the vector and convert each float to a string with a space
+    for (const float& value : floatVector) {
+        ss << value << " ";
     }
-    input[i].currsetarr=currset;
+    // Convert the stringstream to a string
+    std::string result = ss.str();
 
-      if(pthread_create(&tid[i],nullptr, fuc, &input[i])){
-        cout<<"Cannot create the thread"<<endl;
-        return 1;
-      }
-  }
-  
-  //join 
-  for(int i=0; i<nthreads;i++){
-    pthread_join(tid[i],nullptr);
-  }
+    return result;
+}
 
-  //Print 
-  for(int i=0; i<nthreads;i++){
-    print(i+1,input[i].printH,input[i].currsetarr);
-    cout<<endl;
-  }
+int main(int argc, char *argv[])
+{
+   int sockfd, newsockfd, portno, clilen;
+   struct sockaddr_in serv_addr, cli_addr;
+
+   // Check the commandline arguments
+   if (argc != 2){
+      std::cerr << "Port not provided" << std::endl;
+      exit(0);
+   }
+
+   // Create the socket
+   sockfd = socket(AF_INET, SOCK_STREAM, 0);
+   if (sockfd < 0) {
+      std::cerr << "Error opening socket" << std::endl;
+      exit(0);
+   }
+
+   // Populate the sockaddr_in structure
+   memset(&serv_addr, 0, sizeof(serv_addr));
+
+   portno = atoi(argv[1]);
+   serv_addr.sin_family = AF_INET;
+   serv_addr.sin_addr.s_addr = INADDR_ANY;
+   serv_addr.sin_port = htons(portno);
+
+   // Bind the socket with the sockaddr_in structure
+   if (bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0){
+      std::cerr << "Error binding" << std::endl;
+      exit(0);
+   }
+
+   // Set the max number of concurrent connections
+   listen(sockfd, 5);
+   clilen = sizeof(cli_addr);
+
+   // Accept a new connection
+   signal(SIGCHLD, fireman);
+   while(true) {
+     newsockfd = accept(sockfd, (struct sockaddr *)&cli_addr, (socklen_t *)&clilen);
+     
+     if(fork() == 0){
+       if (newsockfd < 0){
+          std::cerr << "Error accepting new connections" << std::endl;
+          exit(0);
+       }
+       int n, msgSize = 0;
+       n = read(newsockfd, &msgSize, sizeof(int));
+       if (n < 0){
+          std::cerr << "Error reading from socket" << std::endl;
+          exit(0);
+       }
+       char *tempBuffer = new char[msgSize + 1];
+       memset(tempBuffer, 0, msgSize + 1);
+    
+       n = read(newsockfd, tempBuffer, msgSize + 1);
+       if (n < 0){
+          std::cerr << "Error reading from socket" << std::endl;
+          exit(0);
+       }
+       
+       // Convert the received data string to vector
+       string buffer=tempBuffer;
+       
+       vector<string> segmentbuf;
+       in input;
+       work(&input);
+       string newbuffer=vectostring(input.printH);
+       
+       stringstream s;
+       string letter, num;
+       s.clear();
+       s<<buffer;
+       while(s>>letter>>num){
+           //segmented set
+          segmentbuf.push_back(letter);
+          segmentbuf.push_back(num);
+
+           //Null map
+           input.freq.insert({letter,0});
+          }
+       input.currset=segmentbuf;
+       
+       //puts input to do all the calculations
+       
+       
+       //sets output to client back into string 
+       
+       delete[] tempBuffer;
+       
+       msgSize = newbuffer.size();
+       n = write(newsockfd, &msgSize, sizeof(int));
+       if (n < 0){
+          std::cerr << "Error writing to socket" << std::endl;
+          exit(0);
+       }
+       n = write(newsockfd, newbuffer.c_str(), msgSize);
+       if (n < 0){
+          std::cerr << "Error writing to socket" << std::endl;
+          exit(0);
+       }
+       exit(0);
+        }
+     wait(0);
+   } 
+   close(newsockfd);
+   close(sockfd);
   
-    return 0;
+   return 0;
+}
+
 }
